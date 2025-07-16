@@ -11,7 +11,6 @@ import (
 	"gophermart/internal/storage"
 	"gophermart/internal/middleware"
 	"gophermart/internal/utils"
-	"github.com/go-chi/jwtauth/v5"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	
 )
@@ -68,13 +67,11 @@ func (h *BalanceHandler) GetBalance(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *BalanceHandler) Withdraw(w http.ResponseWriter, r *http.Request) {
-	token, _, err := jwtauth.FromContext(r.Context())
+	userID, err := middleware.GetUserIDFromToken(r)
 	if err != nil {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
-
-	userID := int(token.PrivateClaims()["user_id"].(float64))
 
 	var withdrawal struct {
 		Order string  `json:"order"`
@@ -162,13 +159,11 @@ func (h *BalanceHandler) Withdraw(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *BalanceHandler) GetWithdrawals(w http.ResponseWriter, r *http.Request) {
-	token, _, err := jwtauth.FromContext(r.Context())
+	userID, err := middleware.GetUserIDFromToken(r)
 	if err != nil {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
-
-	userID := int(token.PrivateClaims()["user_id"].(float64))
 
 	rows, err := h.storage.DB.Query(
 		"SELECT order_number, sum, processed_at FROM withdrawals WHERE user_id = $1 ORDER BY processed_at DESC",

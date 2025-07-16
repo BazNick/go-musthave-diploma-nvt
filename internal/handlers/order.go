@@ -12,8 +12,7 @@ import (
 	"gophermart/internal/services"
 	"gophermart/internal/storage"
 	"gophermart/internal/utils"
-
-	"github.com/go-chi/jwtauth/v5"
+	"gophermart/internal/middleware"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -47,13 +46,11 @@ func (h *OrderHandler) UploadOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, _, err := jwtauth.FromContext(r.Context())
+	userID, err := middleware.GetUserIDFromToken(r)
 	if err != nil {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
-
-	userID := int(token.PrivateClaims()["user_id"].(float64))
 
 	var existingUserID int
 	err = h.storage.DB.QueryRow(
@@ -88,13 +85,11 @@ func (h *OrderHandler) UploadOrder(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *OrderHandler) GetOrders(w http.ResponseWriter, r *http.Request) {
-	token, _, err := jwtauth.FromContext(r.Context())
+	userID, err := middleware.GetUserIDFromToken(r)
 	if err != nil {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
-
-	userID := int(token.PrivateClaims()["user_id"].(float64))
 
 	rows, err := h.storage.DB.Query(
 		"SELECT number, status, accrual, uploaded_at FROM orders WHERE user_id = $1 ORDER BY uploaded_at DESC",
