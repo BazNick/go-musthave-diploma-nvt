@@ -84,6 +84,7 @@ func (h *OrderHandler) UploadOrder(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusAccepted)
+	w.Header().Set("Content-Type", "application/json")
 }
 
 func (h *OrderHandler) GetOrders(w http.ResponseWriter, r *http.Request) {
