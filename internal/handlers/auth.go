@@ -60,7 +60,6 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		Value:    tokenString,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
 		Expires:  time.Now().Add(24 * time.Hour),
 	})
@@ -113,8 +112,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		Name:     "auth_token",
 		Value:    tokenString,
 		Path:     "/",
-		HttpOnly: true,        
-		Secure:   true,        
+		HttpOnly: true,              
 		SameSite: http.SameSiteLaxMode,
 	})
 

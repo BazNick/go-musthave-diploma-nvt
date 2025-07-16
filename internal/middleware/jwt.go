@@ -16,7 +16,16 @@ func init() {
 }
 
 func Verifier() func(http.Handler) http.Handler {
-	return jwtauth.Verifier(TokenAuth)
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") == "" {
+				if cookie, err := r.Cookie("auth_token"); err == nil {
+					r.Header.Set("Authorization", "Bearer "+cookie.Value)
+				}
+			}
+			jwtauth.Verifier(TokenAuth)(next).ServeHTTP(w, r)
+		})
+	}
 }
 
 func Authenticator() func(http.Handler) http.Handler {
