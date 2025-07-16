@@ -56,7 +56,7 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.SetCookie(w, &http.Cookie{
-		Name:     "jwt",
+		Name:     "auth_token",
 		Value:    tokenString,
 		Path:     "/",
 		HttpOnly: true,
@@ -110,7 +110,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.SetCookie(w, &http.Cookie{
-		Name:     "jwt",
+		Name:     "auth_token",
 		Value:    tokenString,
 		Path:     "/",
 		HttpOnly: true,        
