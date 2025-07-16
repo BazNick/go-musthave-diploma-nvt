@@ -116,6 +116,11 @@ func (h *OrderHandler) GetOrders(w http.ResponseWriter, r *http.Request) {
 		orders = append(orders, order)
 	}
 
+	if err := rows.Err(); err != nil {
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
+
 	if len(orders) == 0 {
 		w.WriteHeader(http.StatusNoContent)
 		return

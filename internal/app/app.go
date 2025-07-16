@@ -116,6 +116,10 @@ func (a *App) processPendingOrders() error {
 		orders = append(orders, number)
 	}
 
+	if err := rows.Err(); err != nil {
+        return err
+    }
+
 	if len(orders) == 0 {
 		return nil
 	}

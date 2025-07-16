@@ -191,6 +191,11 @@ func (h *BalanceHandler) GetWithdrawals(w http.ResponseWriter, r *http.Request) 
 		withdrawals = append(withdrawals, wd)
 	}
 
+	if err := rows.Err(); err != nil {
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
+
 	if len(withdrawals) == 0 {
 		w.WriteHeader(http.StatusNoContent)
 		return
