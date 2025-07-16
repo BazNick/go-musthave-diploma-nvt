@@ -42,6 +42,9 @@ func NewApp(cfg config.Config) (*App, error) {
 	}
 
 	storage := storage.NewStorage(db)
+	if err := storage.InitDB(); err != nil {
+		return nil, fmt.Errorf("failed to init DB schema: %w", err)
+	}
 	accrualService := services.NewAccrualService(&http.Client{Timeout: 10 * time.Second}, cfg.AccrualSystemAddress)
 	
 	app := &App{

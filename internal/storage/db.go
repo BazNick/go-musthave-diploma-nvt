@@ -26,41 +26,35 @@ func NewStorage(db *sql.DB) *Storage {
 }
 
 func (s *Storage) InitDB() error {
-	stmts := []string{
-        `CREATE TABLE IF NOT EXISTS users (
-            id SERIAL PRIMARY KEY,
-            login TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL
-        )`,
+	_, err := s.DB.Exec(`
+		CREATE TABLE IF NOT EXISTS users (
+			id SERIAL PRIMARY KEY,
+			login TEXT UNIQUE NOT NULL,
+			password TEXT NOT NULL
+		);
 
-        `CREATE TABLE IF NOT EXISTS orders (
-            number TEXT PRIMARY KEY,
-            status TEXT NOT NULL,
-            accrual FLOAT DEFAULT 0,
-            uploaded_at TIMESTAMP WITH TIME ZONE NOT NULL,
-            user_id INTEGER REFERENCES users(id) NOT NULL
-        )`,
+		CREATE TABLE IF NOT EXISTS orders (
+			number TEXT PRIMARY KEY,
+			status TEXT NOT NULL,
+			accrual FLOAT DEFAULT 0,
+			uploaded_at TIMESTAMP WITH TIME ZONE NOT NULL,
+			user_id INTEGER REFERENCES users(id) NOT NULL
+		);
 
-        `CREATE TABLE IF NOT EXISTS withdrawals (
-            order_number TEXT PRIMARY KEY,
-            sum FLOAT NOT NULL,
-            processed_at TIMESTAMP WITH TIME ZONE NOT NULL,
-            user_id INTEGER REFERENCES users(id) NOT NULL
-        )`,
+		CREATE TABLE IF NOT EXISTS withdrawals (
+			order_number TEXT PRIMARY KEY,
+			sum FLOAT NOT NULL,
+			processed_at TIMESTAMP WITH TIME ZONE NOT NULL,
+			user_id INTEGER REFERENCES users(id) NOT NULL
+		);
 
-        `CREATE TABLE IF NOT EXISTS balances (
-            user_id INTEGER PRIMARY KEY REFERENCES users(id),
-            current FLOAT DEFAULT 0,
-            withdrawn FLOAT DEFAULT 0
-        )`,
-    }
-
-    for _, stmt := range stmts {
-        if _, err := s.DB.Exec(stmt); err != nil {
-            return err
-        }
-    }
-    return nil
+		CREATE TABLE IF NOT EXISTS balances (
+			user_id INTEGER PRIMARY KEY REFERENCES users(id),
+			current FLOAT DEFAULT 0,
+			withdrawn FLOAT DEFAULT 0
+		);
+	`)
+	return err
 }
 
 func (s *Storage) CreateUser(user *models.User) error {
