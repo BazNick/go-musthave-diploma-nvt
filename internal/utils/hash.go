@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"strings"
 )
 
@@ -55,4 +56,14 @@ func IsValidLuhn(number string) bool {
 		alt = !alt
 	}
 	return sum%10 == 0
+}
+
+func BuildInClause(values []string, startIndex int) (string, []interface{}) {
+	placeholders := make([]string, len(values))
+	args := make([]interface{}, len(values))
+	for i, v := range values {
+		placeholders[i] = fmt.Sprintf("$%d", i+startIndex)
+		args[i] = v
+	}
+	return strings.Join(placeholders, ", "), args
 }

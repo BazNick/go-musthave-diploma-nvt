@@ -1,8 +1,8 @@
 package handlers
 
 import (
-	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
@@ -10,14 +10,15 @@ import (
 	"gophermart/internal/models"
 	"gophermart/internal/storage"
 	"gophermart/internal/utils"
+
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 type AuthHandler struct {
-	storage *storage.Storage
+	storage storage.Storage
 }
 
-func NewAuthHandler(storage *storage.Storage) *AuthHandler {
+func NewAuthHandler(storage storage.Storage) *AuthHandler {
 	return &AuthHandler{storage: storage}
 }
 
@@ -28,11 +29,6 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if user.Login == "" || user.Password == "" {
-		http.Error(w, "Login and password are required", http.StatusBadRequest)
-		return
-	}
-
 	hashedPassword, err := utils.HashPassword(user.Password)
 	if err != nil {
 		http.Error(w, "Failed to create user", http.StatusInternalServerError)
@@ -40,8 +36,8 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	user.Password = hashedPassword
-	if err := h.storage.CreateUser(&user); err != nil {
-		if err == storage.ErrUserExists {
+	if err := h.storage.CreateUser(r.Context(), &user); err != nil {
+		if errors.Is(err, storage.ErrUserExists) {
 			http.Error(w, "Login already exists", http.StatusConflict)
 		} else {
 			http.Error(w, "Failed to create user", http.StatusInternalServerError)
@@ -58,38 +54,28 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     "auth_token",
 		Value:    tokenString,
-		Path:     "/",
+		Expires:  time.Now().Add(24 * time.Hour),
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Expires:  time.Now().Add(24 * time.Hour),
+		Path:     "/",
 	})
-
-	w.WriteHeader(http.StatusOK)
 }
 
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
-	var user models.User
-	if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
+	var reqUser models.User
+	if err := json.NewDecoder(r.Body).Decode(&reqUser); err != nil {
 		http.Error(w, "Invalid request format", http.StatusBadRequest)
 		return
 	}
 
-	if user.Login == "" || user.Password == "" {
+	if reqUser.Login == "" || reqUser.Password == "" {
 		http.Error(w, "Login and password are required", http.StatusBadRequest)
 		return
 	}
 
-	var dbUser struct {
-		ID       int
-		Password string
-	}
-	err := h.storage.DB.QueryRow(
-		"SELECT id, password FROM users WHERE login = $1",
-		user.Login,
-	).Scan(&dbUser.ID, &dbUser.Password)
-
+	dbUser, err := h.storage.GetUserByLogin(r.Context(), reqUser.Login)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, storage.ErrNotFound) {
 			http.Error(w, "Invalid login or password", http.StatusUnauthorized)
 		} else {
 			http.Error(w, "Failed to authenticate", http.StatusInternalServerError)
@@ -97,12 +83,12 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !utils.CheckPasswordHash(user.Password, dbUser.Password) {
+	if !utils.CheckPasswordHash(reqUser.Password, dbUser.Password) {
 		http.Error(w, "Invalid login or password", http.StatusUnauthorized)
 		return
 	}
 
-	tokenString, err := md.GenerateToken(user.ID)
+	tokenString, err := md.GenerateToken(dbUser.ID)
 	if err != nil {
 		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
 		return
@@ -112,8 +98,9 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		Name:     "auth_token",
 		Value:    tokenString,
 		Path:     "/",
-		HttpOnly: true,              
+		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
+		Expires:  time.Now().Add(24 * time.Hour),
 	})
 
 	w.WriteHeader(http.StatusOK)

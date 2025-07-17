@@ -1,31 +1,25 @@
 package handlers
 
 import (
-	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 
+	"gophermart/internal/middleware"
 	"gophermart/internal/models"
-	"gophermart/internal/services"
 	"gophermart/internal/storage"
 	"gophermart/internal/utils"
-	"gophermart/internal/middleware"
-	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 type OrderHandler struct {
-	storage *storage.Storage
-	accrual *services.AccrualService
+	storage storage.Storage
 }
 
-func NewOrderHandler(storage *storage.Storage, accrual *services.AccrualService) *OrderHandler {
-	return &OrderHandler{
-		storage: storage,
-		accrual: accrual,
-	}
+func NewOrderHandler(storage storage.Storage) *OrderHandler {
+	return &OrderHandler{storage: storage}
 }
 
 func (h *OrderHandler) UploadOrder(w http.ResponseWriter, r *http.Request) {
@@ -52,36 +46,32 @@ func (h *OrderHandler) UploadOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var existingUserID int
-	err = h.storage.DB.QueryRow(
-		"SELECT user_id FROM orders WHERE number = $1",
-		orderNumber,
-	).Scan(&existingUserID)
-
+	existingOrder, err := h.storage.GetOrderByNumber(r.Context(), orderNumber)
 	if err == nil {
-		if existingUserID == userID {
+		if existingOrder.UserID == userID {
 			w.WriteHeader(http.StatusOK)
 		} else {
-			http.Error(w, "Order number already uploaded by another user", http.StatusConflict)
+			http.Error(w, "Order already uploaded by another user", http.StatusConflict)
 		}
 		return
-	} else if err != sql.ErrNoRows {
+	} else if !errors.Is(err, storage.ErrOrderNotFound) {
 		http.Error(w, "Failed to check order", http.StatusInternalServerError)
 		return
 	}
 
-	_, err = h.storage.DB.Exec(
-		"INSERT INTO orders (number, status, uploaded_at, user_id) VALUES ($1, $2, $3, $4)",
-		orderNumber, "NEW", time.Now(), userID,
-	)
+	newOrder := models.Order{
+		Number:     orderNumber,
+		Status:     "NEW",
+		UploadedAt: time.Now(),
+		UserID:     userID,
+	}
 
-	if err != nil {
+	if err := h.storage.CreateOrder(r.Context(), &newOrder); err != nil {
 		http.Error(w, "Failed to save order", http.StatusInternalServerError)
 		return
 	}
 
 	w.WriteHeader(http.StatusAccepted)
-	w.Header().Set("Content-Type", "application/json")
 }
 
 func (h *OrderHandler) GetOrders(w http.ResponseWriter, r *http.Request) {
@@ -91,31 +81,11 @@ func (h *OrderHandler) GetOrders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := h.storage.DB.Query(
-		"SELECT number, status, accrual, uploaded_at FROM orders WHERE user_id = $1 ORDER BY uploaded_at DESC",
-		userID,
-	)
+	orders, err := h.storage.GetOrders(r.Context(), userID)
 	if err != nil {
 		http.Error(w, "Failed to get orders", http.StatusInternalServerError)
 		return
 	}
-	defer rows.Close()
-
-	var orders []models.Order
-	for rows.Next() {
-		var order models.Order
-		err := rows.Scan(&order.Number, &order.Status, &order.Accrual, &order.UploadedAt)
-		if err != nil {
-			http.Error(w, "Failed to read orders", http.StatusInternalServerError)
-			return
-		}
-		orders = append(orders, order)
-	}
-
-	if err := rows.Err(); err != nil {
-        http.Error(w, err.Error(), http.StatusInternalServerError)
-        return
-    }
 
 	if len(orders) == 0 {
 		w.WriteHeader(http.StatusNoContent)

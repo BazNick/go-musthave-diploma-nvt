@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
-	"net/http"
 	"time"
 
 	"gophermart/internal/config"
@@ -23,12 +22,11 @@ type App struct {
 	DB      *sql.DB
 	Router  *chi.Mux
 	Config  config.Config
-	Client  *http.Client
-	Storage *storage.Storage
+	Storage storage.Storage
 	Accrual *services.AccrualService
 }
 
-func NewApp(cfg config.Config) (*App, error) {
+func NewApp(cfg config.Config, storage storage.Storage, accrual *services.AccrualService) (*App, error) {
 	db, err := sql.Open("pgx", cfg.DatabaseURI)
 	if err != nil {
 		return nil, err
@@ -41,18 +39,15 @@ func NewApp(cfg config.Config) (*App, error) {
 		return nil, err
 	}
 
-	storage := storage.NewStorage(db)
 	if err := storage.InitDB(); err != nil {
-		return nil, fmt.Errorf("failed to init DB schema: %w", err)
+		return nil, err
 	}
-	accrualService := services.NewAccrualService(&http.Client{Timeout: 10 * time.Second}, cfg.AccrualSystemAddress)
-	
+
 	app := &App{
 		DB:      db,
 		Config:  cfg,
-		Client:  &http.Client{Timeout: 10 * time.Second},
 		Storage: storage,
-		Accrual: accrualService,
+		Accrual: accrual,
 	}
 
 	app.initRouter()
@@ -69,7 +64,7 @@ func (a *App) initRouter() {
 	r.Post("/api/user/register", authHandler.Register)
 	r.Post("/api/user/login", authHandler.Login)
 
-	orderHandler := handlers.NewOrderHandler(a.Storage, a.Accrual)
+	orderHandler := handlers.NewOrderHandler(a.Storage)
 	balanceHandler := handlers.NewBalanceHandler(a.Storage)
 
 	r.Group(func(r chi.Router) {
@@ -92,103 +87,52 @@ func (a *App) ProcessOrdersWorker(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		default:
-			err := a.processPendingOrders()
-			if err != nil {
-				log.Printf("Error processing orders: %v", err)
+			if err := a.processOrdersBatch(ctx); err != nil {
+				log.Printf("Order processing error: %v", err)
 			}
 			time.Sleep(1 * time.Second)
 		}
 	}
 }
 
-func (a *App) processPendingOrders() error {
-	rows, err := a.DB.Query(
-		"SELECT number FROM orders WHERE status IN ('NEW', 'PROCESSING') ORDER BY uploaded_at LIMIT 10",
-	)
+func (a *App) processOrdersBatch(ctx context.Context) error {
+	orders, err := a.Storage.GetPendingOrders(ctx, 10)
 	if err != nil {
-		return fmt.Errorf("failed to get pending orders: %w", err)
+		return fmt.Errorf("get pending orders: %w", err)
 	}
-	defer rows.Close()
-
-	var orders []string
-	for rows.Next() {
-		var number string
-		if err := rows.Scan(&number); err != nil {
-			return fmt.Errorf("failed to scan order number: %w", err)
-		}
-		orders = append(orders, number)
-	}
-
-	if err := rows.Err(); err != nil {
-        return err
-    }
-
 	if len(orders) == 0 {
 		return nil
 	}
 
-	for _, orderNumber := range orders {
-		_, err := a.DB.Exec(
-			"UPDATE orders SET status = 'PROCESSING' WHERE number = $1 AND status = 'NEW'",
-			orderNumber,
-		)
+	userIDs, err := a.Storage.SetOrderProcessing(ctx, orders)
+	if err != nil {
+		return fmt.Errorf("set processing status: %w", err)
+	}
+
+	for _, number := range orders {
+		accrual, err := a.Accrual.GetAccrual(ctx, number)
 		if err != nil {
-			log.Printf("Failed to update order %s to PROCESSING: %v", orderNumber, err)
+			log.Printf("Failed to get accrual for order %s: %v", number, err)
 			continue
 		}
 
-		accrual, err := a.Accrual.GetAccrual(context.Background(), orderNumber)
-		if err != nil {
-			log.Printf("Failed to query accrual for order %s: %v", orderNumber, err)
-			continue
-		}
-
-		tx, err := a.DB.Begin()
-		if err != nil {
-			log.Printf("Failed to begin transaction for order %s: %v", orderNumber, err)
-			continue
-		}
-
-		var userID int
-		err = tx.QueryRow(
-			"SELECT user_id FROM orders WHERE number = $1",
-			orderNumber,
-		).Scan(&userID)
-		if err != nil {
-			tx.Rollback()
-			log.Printf("Failed to get user ID for order %s: %v", orderNumber, err)
-			continue
-		}
-
-		_, err = tx.Exec(
-			"UPDATE orders SET status = $1, accrual = $2 WHERE number = $3",
-			accrual.Status, accrual.Accrual, orderNumber,
-		)
-		if err != nil {
-			tx.Rollback()
-			log.Printf("Failed to update order %s: %v", orderNumber, err)
+		if err := a.Storage.UpdateOrder(ctx, number, accrual.Status, accrual.Accrual); err != nil {
+			log.Printf("Failed to update order %s: %v", number, err)
 			continue
 		}
 
 		if accrual.Status == "PROCESSED" && accrual.Accrual > 0 {
-			_, err = tx.Exec(
+			userID := userIDs[number]
+			if _, err := a.DB.ExecContext(ctx,
 				`INSERT INTO balances (user_id, current, withdrawn) 
 				 VALUES ($1, $2, 0)
 				 ON CONFLICT (user_id) DO UPDATE 
 				 SET current = balances.current + EXCLUDED.current`,
 				userID, accrual.Accrual,
-			)
-			if err != nil {
-				tx.Rollback()
+			); err != nil {
 				log.Printf("Failed to update balance for user %d: %v", userID, err)
-				continue
 			}
 		}
-
-		if err := tx.Commit(); err != nil {
-			log.Printf("Failed to commit transaction for order %s: %v", orderNumber, err)
-		}
 	}
-
 	return nil
 }

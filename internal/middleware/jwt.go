@@ -11,8 +11,8 @@ import (
 
 var TokenAuth *jwtauth.JWTAuth
 
-func init() {
-	TokenAuth = jwtauth.New("HS256", []byte("secret"), nil)
+func InitJWT(secret string) {
+	TokenAuth = jwtauth.New("HS256", []byte(secret), nil)
 }
 
 func Verifier() func(http.Handler) http.Handler {

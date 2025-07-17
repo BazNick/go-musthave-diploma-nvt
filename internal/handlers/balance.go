@@ -1,69 +1,40 @@
 package handlers
 
 import (
-	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
-	"strings"
-	"time"
 
-	"gophermart/internal/models"
-	"gophermart/internal/storage"
 	"gophermart/internal/middleware"
+	"gophermart/internal/storage"
 	"gophermart/internal/utils"
+
 	_ "github.com/jackc/pgx/v5/stdlib"
-	
 )
 
 type BalanceHandler struct {
-	storage *storage.Storage
+	storage storage.Storage
 }
 
-func NewBalanceHandler(storage *storage.Storage) *BalanceHandler {
+func NewBalanceHandler(storage storage.Storage) *BalanceHandler {
 	return &BalanceHandler{storage: storage}
 }
 
 func (h *BalanceHandler) GetBalance(w http.ResponseWriter, r *http.Request) {
-    userID, err := middleware.GetUserIDFromToken(r)
-    if err != nil {
-        http.Error(w, "Unauthorized", http.StatusUnauthorized)
-        return
-    }
+	userID, err := middleware.GetUserIDFromToken(r)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
 
-    var balance models.Balance
-    
-    var userExists bool
-    err = h.storage.DB.QueryRow(
-        "SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)", 
-        userID,
-    ).Scan(&userExists)
-    
-    if err != nil {
-        http.Error(w, "Failed to verify user", http.StatusInternalServerError)
-        return
-    }
-    
-    if !userExists {
-        http.Error(w, "User not found", http.StatusNotFound)
-        return
-    }
+	balance, err := h.storage.GetBalance(r.Context(), userID)
+	if err != nil {
+		http.Error(w, "Failed to get balance", http.StatusInternalServerError)
+		return
+	}
 
-    err = h.storage.DB.QueryRow(
-        `INSERT INTO balances (user_id, current, withdrawn) 
-         VALUES ($1, 0, 0)
-         ON CONFLICT (user_id) 
-         DO UPDATE SET user_id = EXCLUDED.user_id
-         RETURNING current, withdrawn`,
-        userID,
-    ).Scan(&balance.Current, &balance.Withdrawn)
-
-    if err != nil {
-        http.Error(w, "Failed to get or create balance", http.StatusInternalServerError)
-        return
-    }
-
-    w.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(w).Encode(balance)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(balance)
 }
 
 func (h *BalanceHandler) Withdraw(w http.ResponseWriter, r *http.Request) {
@@ -92,66 +63,15 @@ func (h *BalanceHandler) Withdraw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tx, err := h.storage.DB.Begin()
-	if err != nil {
-		http.Error(w, "Failed to start transaction", http.StatusInternalServerError)
-		return
-	}
-	defer tx.Rollback()
-
-	var currentBalance float64
-	err = tx.QueryRow(
-		"SELECT current FROM balances WHERE user_id = $1 FOR UPDATE",
-		userID,
-	).Scan(&currentBalance)
-
-	if err != nil {
-		if err == sql.ErrNoRows {
-			_, err = tx.Exec(
-				"INSERT INTO balances (user_id, current, withdrawn) VALUES ($1, 0, 0)",
-				userID,
-			)
-			if err != nil {
-				http.Error(w, "Failed to initialize balance", http.StatusInternalServerError)
-				return
-			}
-			currentBalance = 0
-		} else {
-			http.Error(w, "Failed to check balance", http.StatusInternalServerError)
-			return
+	if err := h.storage.ProcessWithdrawal(r.Context(), userID, withdrawal.Order, withdrawal.Sum); err != nil {
+		switch {
+		case errors.Is(err, storage.ErrInsufficientFunds):
+			http.Error(w, "Insufficient funds", http.StatusPaymentRequired)
+		case errors.Is(err, storage.ErrDuplicateWithdrawal):
+			http.Error(w, "Order number already used", http.StatusConflict)
+		default:
+			http.Error(w, "Failed to process withdrawal", http.StatusInternalServerError)
 		}
-	}
-
-	if currentBalance < withdrawal.Sum {
-		http.Error(w, "Insufficient funds", http.StatusPaymentRequired)
-		return
-	}
-
-	_, err = tx.Exec(
-		"INSERT INTO withdrawals (order_number, sum, processed_at, user_id) VALUES ($1, $2, $3, $4)",
-		withdrawal.Order, withdrawal.Sum, time.Now(), userID,
-	)
-	if err != nil {
-		if strings.Contains(err.Error(), "duplicate key value violates unique constraint") {
-			http.Error(w, "Order number already used for withdrawal", http.StatusConflict)
-		} else {
-			http.Error(w, "Failed to save withdrawal", http.StatusInternalServerError)
-		}
-		return
-	}
-
-	_, err = tx.Exec(
-		"UPDATE balances SET current = current - $1, withdrawn = withdrawn + $2 WHERE user_id = $3",
-		withdrawal.Sum, withdrawal.Sum, userID,
-	)
-	if err != nil {
-		http.Error(w, "Failed to update balance", http.StatusInternalServerError)
-		return
-	}
-
-	err = tx.Commit()
-	if err != nil {
-		http.Error(w, "Failed to commit transaction", http.StatusInternalServerError)
 		return
 	}
 
@@ -165,31 +85,11 @@ func (h *BalanceHandler) GetWithdrawals(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	rows, err := h.storage.DB.Query(
-		"SELECT order_number, sum, processed_at FROM withdrawals WHERE user_id = $1 ORDER BY processed_at DESC",
-		userID,
-	)
+	withdrawals, err := h.storage.GetWithdrawals(r.Context(), userID)
 	if err != nil {
 		http.Error(w, "Failed to get withdrawals", http.StatusInternalServerError)
 		return
 	}
-	defer rows.Close()
-
-	var withdrawals []models.Withdrawal
-	for rows.Next() {
-		var wd models.Withdrawal
-		err := rows.Scan(&wd.Order, &wd.Sum, &wd.ProcessedAt)
-		if err != nil {
-			http.Error(w, "Failed to read withdrawals", http.StatusInternalServerError)
-			return
-		}
-		withdrawals = append(withdrawals, wd)
-	}
-
-	if err := rows.Err(); err != nil {
-        http.Error(w, err.Error(), http.StatusInternalServerError)
-        return
-    }
 
 	if len(withdrawals) == 0 {
 		w.WriteHeader(http.StatusNoContent)
